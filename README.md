@@ -8,7 +8,7 @@ validation with multiple-testing correction, realistic cost and funding models,
 and live paper trading. **No code here can place a real order** — there is no
 credential handling and no private endpoint.
 
-**113 tests**, including automated look-ahead-bias detection.
+**124 tests**, including automated look-ahead-bias detection.
 
 ---
 
@@ -113,6 +113,44 @@ around it. At a Sharpe of 0.096, demonstrating it statistically would take
 roughly **436 years** of data. It is an institutional trade that works on size
 and patience, and US persons cannot legally access the venues where it works.
 
+### 6. More risk buys a bigger win and a *lower* win rate
+
+`python cli.py leverage --control`
+
+Leverage multiplies arithmetic return linearly but volatility drag
+**quadratically**, so growth rises, peaks, and then falls:
+
+| Leverage | Median | P(double) | **P(any gain)** | P(lose half) | Growth |
+|---:|---:|---:|---:|---:|---:|
+| 1x | 1.10 | 1.3% | **65.6%** | 0.0% | +10.3% |
+| 3x | 1.15 | 22.5% | **58.4%** | 11.5% | +16.6% |
+| 5x | 1.00 | 28.5% | **50.0%** | 28.1% | +3.6% |
+
+Read the middle column. Leverage raises your chance of a *big* win (1.3% to
+28.5%) while lowering your chance of *any* win (65.6% to 50.0%). "Win more often
+than I lose" and "swing for a big score" are opposite requests, and leverage
+trades one for the other.
+
+Past Kelly (here 2.68x) it gets strictly worse: at 2x Kelly growth is exactly
+zero with double the volatility. At 6x, arithmetic return is +81.7%/yr while
+capital compounds at **−3.8%/yr**.
+
+And the control column is the point:
+
+| Leverage | P(double) **with no edge** | P(lose half) | Growth |
+|---:|---:|---:|---:|
+| 3x | 10.7% | 26.3% | **−21.5%** |
+| 5x | 14.6% | 47.7% | **−60.2%** |
+
+**Leverage buys a meaningful chance of doubling even when expected value is
+deeply negative.** A high probability of a big win is not evidence a strategy is
+good — it is evidence it is volatile. Volatility is free; you do not need
+software to obtain it.
+
+Because the measured Sharpe here is 0.63 ± 0.54 — a confidence interval that
+includes zero — the tool recommends **0.00x**. Kelly sizing on an unproven edge
+is not a small bet; it is a bet whose sign is unknown.
+
 ---
 
 ## So what should someone actually do?
@@ -163,6 +201,7 @@ python cli.py universe          # assets, correlations, effective bets
 python cli.py portfolio         # multi-asset vol-targeted backtest
 python cli.py walkforward       # out-of-sample validation + overfitting checks
 python cli.py funding           # perpetual funding and carry economics
+python cli.py leverage --control # how much risk is justified, and its ruin cost
 ```
 
 **Single-asset system (simpler, good for learning):**
@@ -230,6 +269,7 @@ trader/
   portfolio.py     multi-asset backtest engine
   engine.py        single-asset backtest engine
   validation.py    walk-forward, deflated Sharpe, block bootstrap
+  leverage.py      Kelly sizing, volatility drag, ruin probabilities
   funding.py       perpetual funding rates and carry economics
   metrics.py       performance stats with significance warnings
   live.py          live paper trading, crash-safe state
@@ -237,7 +277,7 @@ trader/
   strategy.py      single-asset strategy interface
   strategies/      single-asset + portfolio strategies
 cli.py             command line interface
-tests/             113 tests incl. look-ahead and causality detection
+tests/             124 tests incl. look-ahead and causality detection
 ```
 
 ## Writing a portfolio strategy

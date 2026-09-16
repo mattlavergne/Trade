@@ -261,7 +261,85 @@ def register_portfolio_commands(sub, default_cash: float = 10_000.0) -> None:
                    help="fraction of capital earning funding after margin buffer")
     p.set_defaults(func=cmd_funding)
 
+    p = sub.add_parser("leverage", help="how much leverage is justified, and its ruin cost")
+    add_common(p)
+    p.add_argument("--strategy", default="hold", choices=sorted(PORTFOLIO_STRATEGIES))
+    p.add_argument("--horizon", type=int, default=365, help="days to project")
+    p.add_argument("--paths", type=int, default=10000)
+    p.add_argument("--control", action="store_true",
+                   help="also show outcomes assuming the edge is zero")
+    p.set_defaults(func=cmd_leverage)
+
     p = sub.add_parser("universe", help="show the asset universe and its correlations")
     p.add_argument("--days", type=int, default=1500)
     p.add_argument("--no-cache", action="store_true")
     p.set_defaults(func=cmd_universe)
+
+
+def cmd_leverage(args) -> int:
+    """How much leverage is justified, and what it costs in ruin probability."""
+    from .leverage import analyse, outcome_distribution, zero_edge_control
+
+    panel = load_universe(days=args.days, use_cache=not args.no_cache)
+    venue = get_venue(args.venue)
+    config = RiskConfig(target_volatility=args.target_vol, no_trade_band=args.band)
+    strategy = PORTFOLIO_STRATEGIES[args.strategy]()
+    result = run_portfolio_backtest(panel, strategy, venue, config=config,
+                                    starting_cash=args.cash)
+    returns = result.daily_returns()
+    profile = analyse(returns)
+
+    print(f"\n  {strategy.describe()} on {len(panel.symbols)} assets, "
+          f"{profile.years:.1f} years\n")
+    print(f"  arithmetic return   {profile.arithmetic_return * 100:7.2f}%/yr")
+    print(f"  volatility          {profile.volatility * 100:7.2f}%/yr")
+    print(f"  volatility drag     {profile.volatility ** 2 / 2 * 100:7.2f}%/yr")
+    print(f"  geometric return    {profile.growth(1.0) * 100:7.2f}%/yr   <- what compounds")
+    print(f"  Sharpe              {profile.sharpe:7.2f}  +/- {profile.sharpe_stderr:.2f}")
+    low, high = profile.sharpe_ci
+    print(f"  95% CI for Sharpe   [{low:+.2f}, {high:+.2f}]")
+
+    print(f"\n  Kelly-optimal leverage  {profile.kelly_leverage:.2f}x")
+    print(f"  growth at Kelly         {profile.growth_at_kelly * 100:.1f}%/yr")
+    print(f"  growth at 2x Kelly      {profile.growth(2 * profile.kelly_leverage) * 100:.1f}%/yr"
+          "   <- zero growth, double the risk")
+    k_low, k_high = profile.kelly_ci
+    print(f"  95% CI for Kelly        [{k_low:.1f}x, {k_high:.1f}x]")
+
+    levels = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0]
+    print(f"\n  OUTCOME DISTRIBUTION over {args.horizon} days "
+          f"({args.paths:,} bootstrapped paths)")
+    print(f"  {'lev':>5s}{'median':>9s}{'P(2x+)':>9s}{'P(up)':>8s}"
+          f"{'P(half)':>9s}{'P(ruin)':>9s}{'growth':>9s}")
+    print("  " + "-" * 59)
+    for level in levels:
+        d = outcome_distribution(returns, level, horizon_days=args.horizon,
+                                 num_paths=args.paths)
+        print(f"  {level:4.1f}x{d['median']:9.2f}{d['p_double']:9.1%}{d['p_up']:8.1%}"
+              f"{d['p_lose_half']:9.1%}{d['p_ruin']:9.1%}{d['mean_log_growth'] * 100:8.1f}%")
+
+    if args.control:
+        print("\n  CONTROL: identical risk, edge removed (the scenario you cannot rule out)")
+        control = zero_edge_control(returns)
+        print(f"  {'lev':>5s}{'median':>9s}{'P(2x+)':>9s}{'P(up)':>8s}"
+              f"{'P(half)':>9s}{'P(ruin)':>9s}{'growth':>9s}")
+        print("  " + "-" * 59)
+        for level in levels:
+            d = outcome_distribution(control, level, horizon_days=args.horizon,
+                                     num_paths=args.paths)
+            print(f"  {level:4.1f}x{d['median']:9.2f}{d['p_double']:9.1%}{d['p_up']:8.1%}"
+                  f"{d['p_lose_half']:9.1%}{d['p_ruin']:9.1%}{d['mean_log_growth'] * 100:8.1f}%")
+        print("\n  Note that leverage still buys a meaningful chance of doubling even with")
+        print("  NO edge at all. A high probability of a big win is therefore not evidence")
+        print("  that a strategy is good -- it is evidence that it is volatile.")
+
+    print(f"\n  RECOMMENDED LEVERAGE: {profile.recommended_leverage():.2f}x")
+    if not profile.edge_is_established:
+        print("  The Sharpe confidence interval includes zero, so the edge is not")
+        print("  established. Kelly on an unproven edge is not a small bet -- it is a")
+        print("  bet whose sign is unknown. The growth-optimal size is zero.")
+    else:
+        print(f"  (quarter-Kelly. Full Kelly assumes you know your edge exactly;")
+        print("   overestimating it by 2x means betting 2x Kelly, which grows at zero.)")
+    print()
+    return 0

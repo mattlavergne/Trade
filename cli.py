@@ -12,6 +12,7 @@
     python cli.py portfolio              # multi-asset, vol-targeted backtest
     python cli.py walkforward             # out-of-sample validation
     python cli.py funding                # perpetual funding / carry economics
+    python cli.py leverage --control     # how much risk is justified, and its cost
 """
 
 from __future__ import annotations
