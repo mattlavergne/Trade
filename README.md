@@ -1,164 +1,144 @@
-# Trade — a strategy research harness
+# Trade — a systematic trading research system
 
-A backtesting and live paper-trading framework for finding out whether a trading
-strategy has an edge **before** any money is at risk.
+A framework for building trading strategies and, more importantly, for finding
+out whether they actually work before any money is at risk.
 
-This repository does not contain a profitable trading bot. It contains the
-instrument you use to discover whether one is possible. That distinction is the
-entire point, and the rest of this document explains why.
+It contains a multi-asset portfolio engine with volatility targeting, walk-forward
+validation with multiple-testing correction, realistic cost and funding models,
+and live paper trading. **No code here can place a real order** — there is no
+credential handling and no private endpoint.
 
-**No code in this repository can place a real order.** There is no API key
-handling, no request signing, no private endpoint. It is structurally incapable
-of spending money.
-
----
-
-## Why this repo exists, and what it replaces
-
-This was started after reading a viral post claiming a student turned **$68 into
-$750,000** with a Claude Code trading bot, including **$6,732 profit on the first
-night**, by "scanning 50 markets" for "price errors."
-
-That story is arithmetically impossible, and the tools in this repo let you
-verify that yourself rather than take anyone's word for it.
-
-### The internal contradiction
-
-The post attributes the gains to *arbitrage* — "spots price errors," "no
-guessing," "mispricing across dozens of markets." Arbitrage is the
-**lowest-variance** strategy that exists; it produces small, boring, consistent
-returns. A 99x overnight return requires ~100x leverage on a single directional
-bet, which is the **highest-variance** thing you can do.
-
-The post describes a risk-free strategy delivering lottery-ticket returns. Those
-are mutually exclusive. That alone is disqualifying.
-
-### Check the arbitrage claim against live data
-
-```bash
-python cli.py spread-check
-```
-
-A real run, 2026-09-16:
-
-```
-  coinbase     $75,793.75
-  binanceus    $75,831.27
-  kraken       $75,831.80
-
-  Widest gap:      buy coinbase / sell kraken
-  Gross spread:    $38.05  (5.02 bps)
-  Taker fees:      160.0 bps  (120 buy + 40 sell)
-  Net edge:        -154.98 bps
-```
-
-The widest cross-venue gap available was **5.02 basis points**. Capturing it
-costs **160 basis points** in taker fees. You are **32x underwater** before
-accounting for the fact that the gap closes in milliseconds and you would be
-racing firms with colocated hardware while polling once per second.
-
-This is the normal state of the market, not an unlucky moment. Run it yourself.
+**113 tests**, including automated look-ahead-bias detection.
 
 ---
 
-## The finding that matters more than any strategy
+## What the system actually found
 
-Run `python cli.py compare` and you get the central result of this project.
-Here it is on 9,591 hourly BTC/USD bars (Aug 2025 – Sep 2026, $50 start):
+Every number below came out of this repo on real market data. They are
+reproducible with the commands shown.
 
-| Strategy | Zero fees | Kraken fees | Coinbase fees |
-|---|---:|---:|---:|
-| buy_and_hold | −36.92% | −37.17% | −37.67% |
-| sma_cross | **−1.77%** | −56.75% | **−91.35%** |
-| mean_reversion | −29.04% | −73.59% | −96.20% |
-| donchian | **−7.51%** | −46.62% | −81.85% |
+### 1. Risk management is the edge. Signals mostly are not.
 
-Read that table twice.
+`python cli.py portfolio` — 14 crypto assets, 4.1 years of daily bars:
 
-**With zero fees, every active strategy beats buy-and-hold.** `sma_cross` turns a
-−36.92% market into −1.77%. They look like they work. This is the backtest that
-gets screenshotted and posted.
+| | Vol-targeted hold | Raw buy & hold |
+|---|---:|---:|
+| CAGR | **11.9%** | 10.3% |
+| Volatility | **21.8%** | 63.1% |
+| Sharpe | **0.63** | 0.47 |
+| Max drawdown | **−29.8%** | −75.4% |
+| Calmar | **0.40** | 0.14 |
+| Costs | 0.7% | 0% |
 
-**With real fees, every single one flips to worse than doing nothing.** On
-Coinbase, `sma_cross` paid **$41.28 in fees on a $50 account** — 82% of the
-capital handed to the exchange — and ended at $4.33.
+Both rows hold *the same assets in the same proportions*. The only difference is
+that one sizes positions inversely to recent volatility. That single change cut
+drawdown by two-thirds and raised Sharpe by a third, with almost no turnover.
 
-The strategies did not change. Only the cost model did. **Fees, not signal
-quality, determine the outcome at small account sizes.** Any backtest that
-does not model them to the basis point is fiction.
+The forecasting strategies — time-series momentum, cross-sectional momentum,
+trend-filtered momentum — all generated 10–19x more turnover, paid 22–50% of
+capital in fees, and **none survived out-of-sample validation**.
+
+### 2. The out-of-sample test that kills most strategies
+
+`python cli.py walkforward --strategy trend_filtered`:
+
+| Metric | Value |
+|---|---:|
+| In-sample Sharpe | **1.12** |
+| Out-of-sample Sharpe | **0.54** |
+| Degradation | 0.58 |
+| Windows profitable | **44%** |
+| Bootstrap p-value | 0.222 |
+| **Deflated Sharpe** | **1.5%** |
+
+An in-sample Sharpe of 1.12 looks deployable. After walk-forward and correcting
+for the 108 configurations tested, the probability the edge is real is **1.5%**.
+Fewer than half the out-of-sample windows were profitable.
+
+### 3. Why your backtest is probably noise
+
+`python -c "from trader.validation import expected_max_sharpe; ..."`
+
+| Strategies tried | Expected best Sharpe **on pure random noise** |
+|---:|---:|
+| 10 | 1.11 |
+| 50 | **1.61** |
+| 200 | 1.96 |
+| 1000 | 2.30 |
+
+Test 50 variants on random data and the best will show a Sharpe of 1.61 — a
+figure most people would consider excellent and deploy immediately. This is why
+a backtest without a multiple-testing correction is worthless, and why the
+Deflated Sharpe Ratio is applied everywhere in this repo.
+
+### 4. Crypto diversification is mostly an illusion
+
+`python cli.py universe`:
+
+```
+  Mean pairwise correlation: 0.66
+  Effective independent bets: 1.5 (of 14 assets)
+```
+
+Holding 14 crypto assets is closer to holding **1.5**. The "scan 50 markets"
+pitch fails on this alone, before fees are even considered. Real diversification
+requires assets that are genuinely different — equities, bonds, commodities,
+currencies — not fourteen flavours of the same beta.
+
+### 5. Carry is a real edge, and still too small to matter here
+
+`python cli.py funding` — OKX perpetual funding, 93 days:
+
+| Asset | Funding annualized | % periods positive |
+|---|---:|---:|
+| DOGE | +6.18% | 87.2% |
+| BTC | +5.04% | 89.0% |
+| ETH | +3.74% | 78.6% |
+
+Longs pay shorts ~85% of the time, because retail leverage demand is
+structurally long. Collecting it (long spot + short perp) is **market-neutral
+income, not a forecast**. Then reality:
+
+```
+  expected gross (after 50% capital efficiency):  +2.52%/yr
+  cost drag over a 94-day hold:                   -1.56%/yr
+  EXPECTED NET:                                   +0.96%/yr
+
+  basis-noise std across 400 draws:               10.02%/yr
+  P(profitable over this window):                 56%
+```
+
+The edge is real and positive. It is also **1/10th the size of the basis noise**
+around it. At a Sharpe of 0.096, demonstrating it statistically would take
+roughly **436 years** of data. It is an institutional trade that works on size
+and patience, and US persons cannot legally access the venues where it works.
 
 ---
 
-## Why $50 is the real problem
+## So what should someone actually do?
 
-This is market-independent arithmetic, and no choice of instrument fixes it.
+The evidence in this repo points one direction, and it is not exciting:
 
-Sound risk management means risking **1–2% of the account per trade**. On $50
-that is **$0.50–$1.00 of risk per trade**.
+1. **Own a diversified portfolio.** Not 14 correlated crypto assets — genuinely
+   different asset classes.
+2. **Size positions by volatility, not by conviction.** This is the one change
+   that reliably improved outcomes in every test here, and it requires
+   predicting nothing.
+3. **Cap drawdowns mechanically.** The circuit breaker in `trader/risk.py` cuts
+   exposure as losses deepen. It costs some upside and prevents ruin.
+4. **Trade as rarely as you can stand.** Widening the no-trade band improved
+   every strategy monotonically. Turnover is a certain cost against an uncertain
+   benefit.
+5. **Assume your signal is noise until walk-forward says otherwise.** It usually
+   is.
 
-```
-python cli.py venues
-```
+That is a genuinely effective system. It is also, deliberately, closer to
+"disciplined investing" than to a bot that scalps arbitrage — because that is
+what the data supports.
 
-```
-    coinbase           $50 round trip costs $ 1.22   UNRUNNABLE
-    binanceus          $50 round trip costs $ 0.61   UNRUNNABLE
-    kraken             $50 round trip costs $ 0.41   viable
-    alpaca_equities    $50 round trip costs $ 0.02   viable
-```
-
-On Coinbase your **transaction cost exceeds your entire risk budget**. You would
-be paying more to open the position than you are willing to lose on it. No
-strategy is clever enough to overcome that, because it is not a strategy problem.
-
-The honest summary: **$50 is below the threshold where trading returns can matter.**
-Even a genuinely excellent 15%/year on $50 is **$7.50 a year**. The skill you
-build reading this repo is worth vastly more than the capital at stake.
-
----
-
-## On forex (asked, and answered honestly)
-
-Retail FX looks cheap — `retail_fx` shows a 0.07% breakeven versus Coinbase's
-2.43%. That is real, and it is also a trap. Three reasons FX is **worse**, not
-better, for a small account:
-
-1. **Leverage converts small moves into total loss.** US regulation caps retail
-   FX at 50:1 on majors. At 50:1, a **2% adverse move wipes out 100% of the
-   account**. EUR/USD routinely moves 0.5–0.8% per day. You are two or three
-   ordinary days from zero. The low spread is what *lures* you into the leverage
-   that kills you.
-2. **No positive drift to fall back on.** Equities and crypto trend upward over
-   long horizons, so "hold and wait" is a genuine fallback. Currency pairs are
-   approximately zero-sum and mean-reverting — EUR/USD is not systematically
-   higher today than in 2000. You are **100% dependent on having an edge**,
-   against bank desks that see order flow you never will.
-3. **Brokers' own disclosures** put roughly **70–75% of retail FX accounts at a
-   loss**. That is their regulatory filing, not an outside critic's estimate.
-
-The harness includes a `retail_fx` cost profile so you can model it, but the
-spread is not what destroys FX accounts. Leverage is, and leverage is not a
-modelling problem — it is a ruin problem.
-
----
-
-## The one genuine improvement: commission-free equities
-
-`alpaca_equities` requires a **0.04%** move to break even versus Coinbase's
-**2.43%** — a **60x lower hurdle**. Alpaca charges no commission, supports
-fractional shares (so $50 works), and offers a free paper-trading API.
-
-This does not make you profitable. It removes the single largest structural
-reason you would be guaranteed *un*profitable. It is the difference between a
-losing game and a fair-ish one.
-
-Two constraints to understand before relying on it:
-
-- **Pattern Day Trader rule.** Under $25,000 equity you get **3 day trades per
-  rolling 5 business days**. Strategies that round-trip intraday are simply not
-  runnable. This pushes you toward lower-frequency strategies — which, given the
-  fee analysis above, you should want anyway.
-- **You still pay the spread.** Commission-free is not cost-free.
+**On account size:** none of this makes $50 grow meaningfully. A great 15%/year
+on $50 is $7.50. The machinery here is worth building because it is transferable
+and it prevents expensive mistakes, not because $50 will compound into anything.
 
 ---
 
@@ -172,129 +152,145 @@ pytest -q
 ```
 
 Crypto market data needs no credentials. Equity data via Alpaca needs free paper
-keys from <https://alpaca.markets> (`ALPACA_API_KEY` / `ALPACA_SECRET_KEY`).
+keys from <https://alpaca.markets>.
 
 ## Usage
 
-```bash
-python cli.py venues                                  # cost table and hurdle rates
-python cli.py spread-check                            # live arbitrage reality check
-python cli.py compare --venue kraken                  # all strategies, side by side
-python cli.py backtest --strategy donchian --html     # one strategy + HTML report
-python cli.py paper --strategy donchian --poll 60     # live paper trading
-python cli.py status                                  # paper session state
-```
-
-Tune strategy parameters with repeated `--param`:
+**Portfolio system (the serious one):**
 
 ```bash
-python cli.py backtest --strategy sma_cross --param fast=10 --param slow=40
+python cli.py universe          # assets, correlations, effective bets
+python cli.py portfolio         # multi-asset vol-targeted backtest
+python cli.py walkforward       # out-of-sample validation + overfitting checks
+python cli.py funding           # perpetual funding and carry economics
 ```
 
-## How the backtest avoids lying to you
+**Single-asset system (simpler, good for learning):**
 
-Four design decisions, each guarding against a specific way backtests flatter
-losing strategies:
+```bash
+python cli.py venues            # fee schedules and breakeven hurdles
+python cli.py spread-check      # live cross-venue spread vs the fee floor
+python cli.py compare           # every strategy side by side
+python cli.py backtest --strategy donchian --html
+python cli.py paper --strategy donchian --poll 60    # live paper trading
+python cli.py status
+```
 
-1. **One bar of latency, always.** The strategy sees bars up to and including
-   bar *t* and emits a target exposure; the broker rebalances at bar *t+1*'s
-   **open**. Filling on the signal bar's close is look-ahead bias and is the
-   most common source of imaginary profit. `tests/test_engine.py` includes an
-   oracle strategy that deliberately cheats; if it ever profits, the test fails
-   and every result in the repo is void.
-2. **Costs are explicit and itemised.** Every fill records its fee and slippage
-   separately from PnL, so cost drag is visible rather than buried in returns.
-3. **Minimum notional is enforced by rejection, not by silent resizing.** At $50
-   this rejects real trades. That is accurate, and it is information.
-4. **The benchmark pays the same costs.** Buy-and-hold is run through the same
-   broker and fee schedule, so the comparison is honest in both directions.
+Useful knobs on the portfolio commands:
 
-Additionally, `tests/test_strategies.py` verifies **causality** for every
-strategy: truncating future bars must not change any past signal value. A
-strategy that fails this is reading the future.
+```bash
+python cli.py portfolio --target-vol 0.20 --band 0.75 --venue kraken
+python cli.py walkforward --strategy tsmom --train 500 --test 150
+```
 
-## Metrics, with the caveats attached
+---
 
-The report refuses to print a confident number where none is warranted:
+## How this avoids lying to you
 
-- Fewer than ~30 round trips → per-trade statistics flagged as **noise**.
-- Mean trade PnL with |t| < 2 → flagged as **not distinguishable from zero**.
-- Sample under 6 months → annualised figures flagged as **meaningless**.
-- Cost drag over 10% of capital → flagged as **trading too often for this size**.
-- Any rejected orders → flagged as **not fully executable at this account size**.
+Backtesting is an unusually effective way to generate false confidence. Every
+defence below is enforced by a test that fails loudly if it breaks.
+
+**One bar of latency, always.** Strategies see data through bar *t* and execute
+at bar *t+1*'s open. `tests/test_portfolio.py` includes an oracle strategy that
+signals *tomorrow's* return; if the engine ever lets it compound, the test fails
+and every result in the repo is void.
+
+**Causality checks.** `tests/test_strategies.py` truncates future bars and
+asserts no past signal changes. A strategy reading the future fails this.
+
+**Costs are itemised, never buried.** Fees and slippage are tracked separately
+from PnL. Minimum notional is enforced by *rejection*, not silent resizing.
+
+**The benchmark pays the same costs.** Buy-and-hold runs through the same broker
+and fee schedule, so comparisons are honest in both directions.
+
+**Multiple-testing correction everywhere.** The Deflated Sharpe Ratio (Bailey &
+López de Prado) corrects for how many configurations were tried. Walk-forward
+reports in-sample vs out-of-sample degradation explicitly.
+
+**Metrics refuse to overclaim.** Fewer than ~30 trades, |t| < 2, samples under
+six months, or cost drag over 10% all produce explicit warnings instead of
+confident-looking numbers.
+
+**The fast path is proven equivalent.** The numpy hot loop is checked against the
+readable pandas reference across 24 randomised cases in
+`tests/test_risk_fastpath.py`.
+
+---
 
 ## Layout
 
 ```
 trader/
-  costs.py       venue fee schedules, breakeven arithmetic
-  data.py        ccxt OHLCV fetching with on-disk cache
-  broker.py      paper broker: fills, fees, slippage, rejections
-  strategy.py    strategy interface and registry
-  strategies/    buy_and_hold, sma_cross, mean_reversion, donchian
-  engine.py      backtest loop (the no-look-ahead guarantee lives here)
-  metrics.py     performance stats + statistical-significance warnings
-  live.py        live paper trading with crash-safe state persistence
-  report.py      console output and self-contained HTML reports
-cli.py           command line interface
-tests/           42 tests, including look-ahead and causality detection
+  costs.py         venue fee schedules, breakeven arithmetic
+  data.py          ccxt OHLCV fetching with on-disk cache
+  universe.py      multi-asset aligned price panels
+  broker.py        paper broker: fills, fees, slippage, rejections
+  risk.py          vol targeting, drawdown control, no-trade bands (+numpy)
+  portfolio.py     multi-asset backtest engine
+  engine.py        single-asset backtest engine
+  validation.py    walk-forward, deflated Sharpe, block bootstrap
+  funding.py       perpetual funding rates and carry economics
+  metrics.py       performance stats with significance warnings
+  live.py          live paper trading, crash-safe state
+  report.py        console output and self-contained HTML reports
+  strategy.py      single-asset strategy interface
+  strategies/      single-asset + portfolio strategies
+cli.py             command line interface
+tests/             113 tests incl. look-ahead and causality detection
 ```
 
-## Hosting
-
-The bot is a long-running process, so shared web hosting will not run it. Run
-`cli.py paper` on a local machine or a small VPS under `systemd` or `tmux`.
-
-`reports/*.html` are **fully self-contained** — no external CSS, JS, or fonts,
-inline SVG charts, light and dark themes. Upload one anywhere static (including
-mattlavergne.com) and it works.
-
-## Writing your own strategy
+## Writing a portfolio strategy
 
 ```python
-# trader/strategies/my_idea.py
-import pandas as pd
-from ..strategy import Strategy, register
+from trader.portfolio import PortfolioStrategy
 
-@register("my_idea")
-class MyIdea(Strategy):
-    def __init__(self, lookback: int = 20) -> None:
+class MyIdea(PortfolioStrategy):
+    name = "my_idea"
+
+    def __init__(self, lookback: int = 60) -> None:
         self.lookback = lookback
 
-    def target_exposure(self, bars: pd.DataFrame) -> pd.Series:
-        # Return a Series in [0, 1] aligned to bars.index.
-        # The value at bar t may use ONLY data up to and including bar t.
-        momentum = bars["close"].pct_change(self.lookback)
-        return self._clip((momentum > 0).astype(float))
+    def signals(self, panel):
+        # Return a DataFrame (date x symbol) in [-1, 1].
+        # Express DIRECTION AND CONVICTION only -- position sizing is the
+        # engine's job, via volatility targeting.
+        # Row t may use ONLY data through row t.
+        momentum = panel.close.pct_change(self.lookback)
+        return momentum.apply(lambda c: c.clip(-1, 1)).fillna(0.0)
 ```
 
-Import it in `trader/strategies/__init__.py` and it appears in the CLI
-automatically. The causality test in `tests/test_strategies.py` will check it for
-look-ahead bias — add its name to `BUILT_IN` there.
+Register it in `PORTFOLIO_STRATEGIES` and it appears in the CLI. Then run
+`walkforward` on it before believing anything it tells you.
 
 ---
 
-## Before you consider risking real money
+## Hosting
 
-A checklist, in order. Skipping steps is how people lose money.
+The paper trader is a long-running process, so shared web hosting will not run
+it. Use a local machine or a small VPS under `systemd` or `tmux`.
 
-1. Backtest over **multiple distinct date ranges**, including a bear market.
-   Beating buy-and-hold on one sample is weak evidence.
-2. Confirm the edge is **statistically significant** — 30+ round trips and
-   |t| > 2 on mean trade PnL. The harness tells you when it is not.
-3. Paper trade live for **at least a month** on data that did not exist when the
+`reports/*.html` are fully self-contained — no external CSS, JS or fonts, inline
+SVG charts, light and dark themes. Upload anywhere static and they work.
+
+---
+
+## Before risking real money
+
+1. Backtest across **multiple distinct date ranges**, including a bear market.
+2. Run `walkforward`. If the deflated Sharpe is below 95%, stop.
+3. Paper trade for **at least a month** on data that did not exist when the
    strategy was written. Most strategies die here, for free.
 4. Confirm paper results **match** backtest expectations. A large gap means the
-   backtest was wrong, not that the market was unusual.
-5. Only then consider real money — and start with an amount whose total loss is
-   genuinely irrelevant to you.
-
-If a strategy cannot make money on paper, where there is no slippage beyond the
-model, no rejected orders, no downtime and no emotion, it will not make money
-live.
+   backtest was wrong.
+5. Only then consider real money, in an amount whose total loss is irrelevant
+   to you.
 
 ## What this repo will never tell you
 
-That it found a strategy with a high level of confidence of not losing money. No
-such thing exists at any account size, and anyone offering you one — in a repo,
-a course, or a viral post with an auto-DM funnel attached — is selling something.
+That it found a strategy with high confidence of not losing money. No such thing
+exists at any account size. Anyone offering you one — in a repo, a course, or a
+viral post with an auto-DM funnel attached — is selling something.
+
+The most valuable output here is negative results, arrived at honestly and
+cheaply.

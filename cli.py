@@ -7,6 +7,11 @@
     python cli.py compare --venue kraken # every strategy, side by side
     python cli.py paper --strategy donchian --poll 60
     python cli.py status                 # live paper session state
+
+    python cli.py universe               # assets and their correlations
+    python cli.py portfolio              # multi-asset, vol-targeted backtest
+    python cli.py walkforward             # out-of-sample validation
+    python cli.py funding                # perpetual funding / carry economics
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from trader.data import fetch_ohlcv, fetch_tickers
 from trader.engine import run_backtest
 from trader.live import STATE_DIR, LivePaperTrader
 from trader.report import print_result, write_html_report
+from trader.cli_portfolio import register_portfolio_commands
 from trader.strategy import available_strategies, get_strategy
 
 
@@ -249,6 +255,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("status", help="show live paper session state")
     p.set_defaults(func=cmd_status)
+
+    register_portfolio_commands(sub)
     return parser
 
 
